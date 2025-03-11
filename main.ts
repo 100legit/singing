@@ -1,4 +1,5 @@
 import { getAllOutbounds, Sub, OutboundConfig, Selector } from './outbound.js'
+import { RuleSet, allRuleSets } from './ruleset.js';
 
 /**
  * Root configuration for sing-box
@@ -141,15 +142,6 @@ interface RouteRule {
   outbound?: string; // Tag of the outbound to use.
 }
 
-interface RuleSet {
-  type?: "inline" | "local" | "remote";
-  tag: string;
-  format?: "source" | "binary";
-  url?: string;
-  download_detour?: string;
-  update_interval?: string;
-}
-
 interface ExperimentalConfig {
   cache_file?: CacheFileConfig;
   clash_api?: ClashAPIConfig;
@@ -187,7 +179,7 @@ interface V2RayStatsConfig {
 }
 
 const ENABLE_TUN_AUTO_ROUTE = true;
-const ENABLE_TPROXY = false;
+const ENABLE_TPROXY = true;
 const ENABLE_TUN = true;
 const LOG_LEVEL = "debug";
 const CLASH_API_SECRET = "123";
@@ -248,51 +240,11 @@ const template: SingBoxConfig = {
   ].filter(Boolean),
 }
 
-const rulesetNames = [
-  { tag: "S/ni/my_proxy" },
-  { tag: "S/ds/reject" },
-  { tag: "S/ni/reject-no-drop" }, // block quic
-  { tag: "S/ni/reject-drop" }, // block Adobe tracking
-  { tag: "S/ds/cdn" },
-  { tag: "S/ni/cdn" },
-  { tag: "S/ni/stream" },
-  { tag: "S/ni/telegram" },
-  { tag: "S/ds/apple_cdn" }, // Apple CN CDN
-  { tag: "S/ni/microsoft_cdn" }, // Microsoft CN CDN
-  { tag: "S/ds/download" },
-  { tag: "S/ni/download" },
-  { tag: "S/ni/apple_cn" }, // Apple CN services
-  { tag: "S/ni/apple_services" }, // Apple non CN
-  { tag: "S/ni/microsoft" }, // Microsoft non CN
-  { tag: "S/ni/ai" },
-  { tag: "S/ni/global" },
-  { tag: "S/ni/domestic" },
-  { tag: "S/ni/lan" }, // include .local and in-addr.arpa domains
-
-  { tag: "S/ip/reject" }, // bogus-nxdomain.china.conf
-  { tag: "S/ip/telegram" },
-  { tag: "S/ip/stream" },
-  { tag: "S/ip/lan" },
-  { tag: "S/ip/domestic" },
-  { tag: "S/ip/china_ip" },
-  { tag: "S/ip/china_ip_ipv6" },
-
-  { tag: "M/ds/netflix" },
-  { tag: "M/ds/youtube" },
-  { tag: "M/ds/cn" }, // geosite:cn
-  { tag: "M/ds/notcn" }, // geosite:geolocation-!cn
-
-  { tag: "W/ds/pt" }, // private tracker
-];
-const allRuleSets: RuleSet[] = rulesetNames.map(({ tag }) => ({
-  tag,
-  type: "remote",
-  url: convertRuleSetNameToURL(tag),
-  format: "binary",
-  download_detour: "proxy",
-  update_interval: "1h",
-}));
-
+interface SiteRouteSpec {
+  tag: string;
+  rulesetTags: string[];
+  default: string;
+}
 const siteRouteSpecs: SiteRouteSpec[] = [
   { "tag": "telegram", "rulesetTags": ["S/ni/telegram", "S/ip/telegram"], "default": "香港" },
   { "tag": "ai-services", "rulesetTags": ["S/ni/ai"], "default": "日本" },
@@ -300,10 +252,24 @@ const siteRouteSpecs: SiteRouteSpec[] = [
   { tag: "stream", rulesetTags: ["S/ni/stream", "S/ip/stream"], default: "香港" },
   //{ "tag": "apple", "rulesetTags": ["S/ni/apple_services"] }
 ]
-interface SiteRouteSpec {
-  tag: string;
-  rulesetTags: string[];
-  default: string;
+function getSiteRules(siteRouteSpec: SiteRouteSpec[]): RouteRule[] {
+  return siteRouteSpec.map((rule) => {
+    return {
+      "rule_set": rule.rulesetTags,
+      "outbound": rule.tag
+    }
+  });
+}
+
+function getSiteSelectors(siteRouteSpec: SiteRouteSpec[], outbounds: OutboundConfig[]): Selector[] {
+  return siteRouteSpec.map((rule) => {
+    return {
+      "tag": rule.tag,
+      "type": "selector" as const,
+      "outbounds": outbounds.map(selector => selector.tag),
+      "default": rule.default
+    }
+  });
 }
 const dnsServers: LegacyDNSServer[] = [
   {
@@ -385,9 +351,19 @@ const dnsRules = [
     "server": "dns_direct"
   },
   {
-    rule_set: [
-      ...siteRouteSpecs.map((rule) => rule.rulesetTags).flat().filter((tag) => !tag.includes("ip")),
-      "S/ni/my_proxy"
+    "type": "logical",
+    "mode": "and",
+    "rules": [
+      {
+        "rule_set": [
+          ...siteRouteSpecs.map((rule) => rule.rulesetTags).flat().filter((tag) => !tag.includes("ip")),
+          "S/ni/my_proxy",
+        ],
+      },
+      {
+        "rule_set": "W/ds/nofakeip",
+        "invert": true,
+      }
     ],
     "action": "route",
     server: "fakeip"
@@ -526,7 +502,7 @@ function getConfig(outbounds: OutboundConfig[]): SingBoxConfig {
   }
 }
 
-async function am() {
+async function asyncmain() {
   const subs: Sub[] = [
   ];
   const outbounds = await getAllOutbounds(subs);
@@ -534,7 +510,7 @@ async function am() {
   console.log(JSON.stringify(config, null, 2));
 }
 
-am();
+asyncmain();
 
 function getUsedRulesetTags(routeRules: RouteRule[], dnsRules: DNSRule[]): string[] {
   // filter out rulesets that are not used
@@ -551,44 +527,4 @@ function getUsedRulesetTags(routeRules: RouteRule[], dnsRules: DNSRule[]): strin
   });
   usedRulesetTags.push(...dnsUsedRulesetTags);
   return usedRulesetTags
-}
-
-function getSiteRules(siteRouteSpec: SiteRouteSpec[]): RouteRule[] {
-  return siteRouteSpec.map((rule) => {
-    return {
-      "rule_set": rule.rulesetTags,
-      "outbound": rule.tag
-    }
-  });
-}
-
-function getSiteSelectors(siteRouteSpec: SiteRouteSpec[], outbounds: OutboundConfig[]): Selector[] {
-  return siteRouteSpec.map((rule) => {
-    return {
-      "tag": rule.tag,
-      "type": "selector" as const,
-      "outbounds": outbounds.map(selector => selector.tag),
-      "default": rule.default
-    }
-  });
-}
-
-function convertRuleSetNameToURL(tag: string) {
-  const [source, type, path] = tag.split("/");
-
-  // Expand abbreviations
-  const expandedType = type === "ni" ? "non_ip" :
-    type === "ds" ? "domainset" :
-      type; // "ip" remains unchanged
-
-  switch (source) {
-    case "S":
-      return `https://github.com/100legit/singbox-set/raw/sing/${expandedType}/${path}.srs`;
-    case "M":
-      return `https://github.com/100legit/singbox-set/raw/sing/metacubex/${expandedType}/${path}.srs`;
-    case "W":
-      return `https://github.com/100legit/singbox-set/raw/sing/own/${expandedType}/${path}.srs`;
-    default:
-      return tag;
-  }
 }
