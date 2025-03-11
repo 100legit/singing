@@ -1,5 +1,5 @@
-import { get } from 'node:http';
 import * as https from 'node:https';
+import { SiteRouteSpec } from './main';
 
 /**
  * All possible outbound types
@@ -60,9 +60,15 @@ export interface OutboundConfig {
   tag: string;
 }
 
+interface DirectOutbound extends OutboundConfig {
+  type: "direct";
+  routing_mark?: number;
+}
+
 interface Node extends OutboundConfig {
   type: NodeType;
   server: string;
+  routing_mark?: number;
 }
 
 interface ShadowsocksNode extends Node {
@@ -165,19 +171,19 @@ export async function getShadowsocksSIP008Sub(url: string): Promise<ShadowsocksN
   return outbounds;
 }
 
-export interface Selector extends OutboundConfig {
+interface Selector extends OutboundConfig {
   type: "selector";
   outbounds: string[];
   default?: string;
   interrupt_exist_connections?: boolean;
 }
 
-type outboundSelectorSpec = {
+export type OutboundSelectorSpec = {
   tag: string;
   regex: RegExp;
 }
 
-function getSelectorFromSpec(outbounds: OutboundConfig[], spec: outboundSelectorSpec): Selector|null {
+function getSelectorFromSpec(outbounds: OutboundConfig[], spec: OutboundSelectorSpec): Selector|null {
   const filteredOutbounds = outbounds.filter((outbound) => spec.regex.test(outbound.tag));
   if (filteredOutbounds.length === 0) {
     return null
@@ -218,18 +224,23 @@ export async function getNodesFromSubs(subs: Sub[]): Promise<Node[]> {
   return nodes;
 }
 
-export async function getAllOutbounds(subs: Sub[]) {
-  const regionSelectorSpecs: outboundSelectorSpec[] = [
-    { "tag": "香港", "regex": /HK|香港/ },
-    { "tag": "实验性", "regex": /实验性/ },
-    { "tag": "台湾", "regex": /TW|台湾/ },
-    { "tag": "新加坡", "regex": /SG|新加坡/ },
-    { "tag": "美国", "regex": /US|美国/ },
-    { "tag": "日本", "regex": /JP|日本/ },
-    { "tag": "智利", "regex": /智利/ }
-  ];
+function getSiteSelector(siteRouteSpec: SiteRouteSpec, outbounds: OutboundConfig[]): Selector {
+  return {
+    "tag": siteRouteSpec.tag,
+    "type": "selector",
+    "outbounds": outbounds.map(selector => selector.tag),
+    "default": siteRouteSpec.default
+  }
+}
 
+export async function getAllOutbounds(subs: Sub[], regionSelectorSpecs: OutboundSelectorSpec[], siteRouteSpec: SiteRouteSpec[], routing_mark?: number): Promise<OutboundConfig[]> {
   const nodes = await getNodesFromSubs(subs);
+  // add routing mark to each node
+  if (routing_mark) {
+    nodes.forEach((node, index) => {
+      node.routing_mark = routing_mark;
+    });
+  }
   
   const regionSelectors: Selector[] = regionSelectorSpecs.map((spec) => {
     return getSelectorFromSpec(nodes, spec);
@@ -240,6 +251,10 @@ export async function getAllOutbounds(subs: Sub[]) {
   if (otherSelector !== null) {
     regionSelectors.push(otherSelector);
   }
+
+  const siteSelectors = siteRouteSpec.map((spec) => {
+    return getSiteSelector(spec, nodes);
+  });
 
   const proxySelector: Selector = {
     "type": "selector" as const,
@@ -252,15 +267,17 @@ export async function getAllOutbounds(subs: Sub[]) {
     "tag": "final",
     "outbounds": ["proxy", "direct"],
   }
-  const directOutbound: OutboundConfig = {
+  const directOutbound: DirectOutbound = {
     "tag": "direct",
-    "type": "direct"
-  }
+    "type": "direct",
+    ...(routing_mark ? { "routing_mark": routing_mark } : {})
+  };
 
   return [
     directOutbound,
     proxySelector,
     finalSelector,
+    ...siteSelectors,
     ...regionSelectors,
     ...nodes,
   ]

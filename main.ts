@@ -1,4 +1,4 @@
-import { getAllOutbounds, Sub, OutboundConfig, Selector } from './outbound.js'
+import { getAllOutbounds, Sub, OutboundConfig, OutboundSelectorSpec } from './outbound.js'
 import { RuleSet, allRuleSets } from './ruleset.js';
 
 /**
@@ -240,7 +240,7 @@ const template: SingBoxConfig = {
   ].filter(Boolean),
 }
 
-interface SiteRouteSpec {
+export interface SiteRouteSpec {
   tag: string;
   rulesetTags: string[];
   default: string;
@@ -261,16 +261,6 @@ function getSiteRules(siteRouteSpec: SiteRouteSpec[]): RouteRule[] {
   });
 }
 
-function getSiteSelectors(siteRouteSpec: SiteRouteSpec[], outbounds: OutboundConfig[]): Selector[] {
-  return siteRouteSpec.map((rule) => {
-    return {
-      "tag": rule.tag,
-      "type": "selector" as const,
-      "outbounds": outbounds.map(selector => selector.tag),
-      "default": rule.default
-    }
-  });
-}
 const dnsServers: LegacyDNSServer[] = [
   {
     "tag": "dns_proxy",
@@ -491,8 +481,7 @@ function getConfig(outbounds: OutboundConfig[]): SingBoxConfig {
   return {
     ...template,
     dns: dnsConfig,
-    // outbounds += site-specific outbounds
-    outbounds: outbounds.concat(getSiteSelectors(siteRouteSpecs, outbounds)),
+    outbounds,
     route: {
       rules: routeRules,
       rule_set: usedRulesets,
@@ -502,10 +491,20 @@ function getConfig(outbounds: OutboundConfig[]): SingBoxConfig {
   }
 }
 
+const regionSelectorSpecs: OutboundSelectorSpec[] = [
+  { "tag": "香港", "regex": /HK|香港/ },
+  { "tag": "实验性", "regex": /实验性/ },
+  { "tag": "台湾", "regex": /TW|台湾/ },
+  { "tag": "新加坡", "regex": /SG|新加坡/ },
+  { "tag": "美国", "regex": /US|美国/ },
+  { "tag": "日本", "regex": /JP|日本/ },
+  { "tag": "智利", "regex": /智利/ }
+];
+
 async function asyncmain() {
   const subs: Sub[] = [
   ];
-  const outbounds = await getAllOutbounds(subs);
+  const outbounds = await getAllOutbounds(subs, regionSelectorSpecs, siteRouteSpecs, 2);
   const config = getConfig(outbounds);
   console.log(JSON.stringify(config, null, 2));
 }
