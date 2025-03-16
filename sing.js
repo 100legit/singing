@@ -56,7 +56,7 @@ class Outbound {
 }
 
 class Direct extends Outbound {
-  static tag = "Direct";
+  static tag = "DirectOut";
   static routing_mark = null;
   static get() {
     return {
@@ -107,14 +107,14 @@ class Selector extends Outbound {
 }
 
 class ProxySelector extends Selector {
-  static tag = "Proxy";
+  static tag = "ProxySel";
   constructor(outbounds, _default) {
     super(ProxySelector.tag, outbounds, _default);
   }
 }
 
 class FinalSelector extends Selector {
-  static tag = "Final";
+  static tag = "FinalSel";
   constructor(outbounds, _default) {
     super(FinalSelector.tag, outbounds, _default);
   }
@@ -167,26 +167,26 @@ class DnsServer {
 }
 
 class DirectDnsServer extends DnsServer {
-  static tag = Direct.tag;
+  static tag = "DirectDNS";
   constructor(address, strategy) {
     super(DirectDnsServer.tag, address, Direct.tag, strategy);
   }
 }
 class ProxyDnsServer extends DnsServer {
-  static tag = ProxySelector.tag;
+  static tag = "ProxyDNS";
   constructor(address, strategy) {
     super(ProxyDnsServer.tag, address, ProxySelector.tag, strategy);
   }
 }
 class DirectPreferV6DnsServer extends DnsServer {
-  static tag = "DirectPreferV6";
+  static tag = "DirectPreferV6DNS";
   static strategy = "prefer_ipv6";
   constructor(address) {
     super(DirectPreferV6DnsServer.tag, address, Direct.tag, DirectPreferV6DnsServer.strategy);
   }
 }
 class FakeIpDnsServer extends DnsServer {
-  static tag = "FakeIP";
+  static tag = "FakeIPDNS";
   static inet4_range = "198.18.0.0/15";
   static inet6_range = "fc00::/18";
   constructor() {
@@ -221,7 +221,7 @@ function convertRuleSetNameToURL(tag) {
 }
 
 const ENABLE_TUN_AUTO_ROUTE = true;
-const ENABLE_TPROXY = true;
+const ENABLE_TPROXY = false;
 const ENABLE_TUN = true;
 const LOG_LEVEL = "debug";
 const CLASH_API_SECRET = "123";
@@ -238,13 +238,13 @@ const template = {
     "server": "ntp.aliyun.com",
     "server_port": 123,
     "interval": "30m",
-    "detour": "direct"
+    "detour": Direct.tag
   },
   "experimental": {
     "cache_file": {
       "enabled": true,
       "store_fakeip": true,
-      "store_rdrc": false
+      "store_rdrc": true
     },
     "clash_api": {
       "external_controller": "127.0.0.1:9090",
@@ -318,22 +318,22 @@ const siteSpecs = [
 const dnsRules = [
   {
     outbound: "any",
-    server: "dns_direct"
+    server: DirectDnsServer.tag
   },
-  { ruleset: ["W/ds/pt"], server: DirectPreferV6DnsServer.tag },
+  { rule_set: ["W/ds/pt"], server: DirectPreferV6DnsServer.tag },
   {
-    ruleset: [
+    rule_set: [
       "S/ni/my_proxy",
       "S/ds/reject"
     ], server: FakeIpDnsServer.tag
   },
   // Site-specific DNS use fakeip
   ...siteSpecs.map(site => ({
-    ruleset: site.rulesetTags,
+    rule_set: site.rulesetTags,
     server: FakeIpDnsServer.tag
   })),
   {
-    ruleset: [
+    rule_set: [
       "W/ds/direct_nofakeip",
       "S/ni/lan",
       "S/ni/apple_cn",
@@ -350,7 +350,7 @@ const dnsRules = [
     ], server: DirectDnsServer.tag
   },
 
-  { ruleset: ["S/ni/global", "M/ds/notcn"], server: ProxyDnsServer.tag },
+  { rule_set: ["S/ni/global", "M/ds/notcn"], server: ProxyDnsServer.tag },
 ].map(rule => {
   if (!('action' in rule)) {
     rule.action = "route";
@@ -388,7 +388,7 @@ const routeRules = [
     "no_drop": true
   },
   ...siteSpecs.map(site => ({
-    ruleset: site.rulesetTags,
+    rule_set: site.rulesetTags,
     action: "route",
     outbound: site.tag
   })),
@@ -451,7 +451,7 @@ async function getAllOutbounds() {
   const siteSelectors = siteSpecs.map(siteSpec => new SiteSelector(siteSpec, regionSelectors.concat(Direct.tag, ProxySelector.tag)));
   return [
     Direct.get(),
-    (new ProxySelector(regionSelectors.concat(Direct.tag, ProxySelector.tag))).get(),
+    (new ProxySelector(regionSelectors.concat(Direct.tag))).get(),
     (new FinalSelector([ProxySelector.tag, Direct.tag])).get(),
     ...siteSelectors.map(siteSelector => siteSelector.get()),
     ...regionSelectors.map(regionSelector => regionSelector.get()),
@@ -465,7 +465,7 @@ async function main() {
     "rules": dnsRules,
     "servers": [
       new DirectDnsServer("https://223.5.5.5/dns-query").getLegacy(),
-      new ProxyDnsServer("https://dns.google/dns-query").getLegacy(),
+      new ProxyDnsServer("tls://1.1.1.1").getLegacy(),
       new DirectPreferV6DnsServer("https://223.5.5.5/dns-query").getLegacy(),
       new FakeIpDnsServer().getLegacy(),
     ],
@@ -477,14 +477,13 @@ async function main() {
     reverse_mapping: false,
     "fakeip": {
       "enabled": true,
-      "inet4_range": "198.18.0.0/15",
-      "inet6_range": "fc00::/18"
+      "inet4_range": FakeIpDnsServer.inet4_range,
+      "inet6_range": FakeIpDnsServer.inet6_range
     }
   };
   // filter out rulesets that are not used
-  const usedRulesetTags = getUsedRulesetTags(routeRules, dnsConfig.rules);
-  console.log(usedRulesetTags);
-  const allRuleSets = usedRulesetTags.map(tag => ({
+  const usedRulesetTags = new Set(getUsedRulesetTags(routeRules, dnsConfig.rules));
+  const allRuleSets = Array.from(usedRulesetTags).map(tag => ({
     tag,
     type: "remote",
     url: convertRuleSetNameToURL(tag),
